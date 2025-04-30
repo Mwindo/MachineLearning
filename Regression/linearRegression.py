@@ -1,6 +1,6 @@
 # Regression is the initial example in both Dive into Deep Learning and Goodfellow.
 # In this file:
-# Start with the least-squaes analytic model with a single independent variable,
+# Start with the least-squares analytic model with a single independent variable,
 # deriving the formula via simple calculus.
 # Extend this to a model with an arbitrary number of independent variables.
 # Then implement non-analytic versions with hyperparameters.
