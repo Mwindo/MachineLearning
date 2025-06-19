@@ -56,12 +56,10 @@ class LinearRegressionSimple:
 # Consider linear dependencies between variables, conditioning, etc.
 class LinearRegressionMultiple:
 
-    # Also implement pcr
-
     @dataclass
     class MultipleRegressionOptions:
         drop_correlated_columns_min_correlation: float | None = None
-        pcr_min_correlation: float | None = None # Principle Components Reduction (reduce to orthogonal components via PCA)
+        pcr_min_explained_variance: float | None = None # Principle Components Reduction (reduce to orthogonal components via PCA)
         ridge_reduction_parameter: float | None = None # L2 regularization
         # Good for smoothing out moderate collinearities, at the cost of bias.
         # You make X invertible no matter what.
@@ -79,12 +77,34 @@ class LinearRegressionMultiple:
         self.mu = X.mean(dim=0, keepdim=True)
         self.sigma = X.std(dim=0, unbiased=False, keepdim=True).clamp_min(1e-8)
         self.column_mask = None
+        self.pca_components = None
         self.B = self.get_coefficient_matrix(X, Y)
     
     def prepare_design_matrix(
         self,
         X: torch.Tensor,
     ):
+        
+        def get_covariance(X: torch.Tensor):
+            return X.T @ X / (X.shape[0] - 1)
+        
+        def get_PCA_components(X: torch.Tensor, explained_variance: float = .9):
+            if self.pca_components is not None:
+                return self.pca_components
+            covariance = get_covariance(X)
+            eigenvalues, eigenvectors = torch.linalg.eigh(covariance)
+            # Sort so first eigenvector accounts for most variance
+            sorted_idx = torch.argsort(eigenvalues, descending=True)
+            eigenvalues = eigenvalues[sorted_idx]
+            eigenvectors = eigenvectors[:, sorted_idx]
+            explained_variance_ratio = eigenvalues / eigenvalues.sum()
+            cum_var = torch.cumsum(explained_variance_ratio, dim=0)
+            k = (cum_var >= explained_variance).nonzero(as_tuple=True)[0][0].item() + 1
+            # print(f"Need {k} components to explain >= {explained_variance} of variance")
+            # print("Explained-variance ratios of those PCs:", explained_variance_ratio[:k])
+            self.pca_components = eigenvectors[:, :k]
+            return self.pca_components
+
         def standardize(X: torch.Tensor):
             # Center X to 1) improve numerical stability and 2) make intercept more interpretable
             # (since each intercept will say how far from the mean a given variable deviates)
@@ -106,7 +126,7 @@ class LinearRegressionMultiple:
                 return self.column_mask
             design_matrix = (self.X - self.mu) / self.sigma
             if self.options and self.options.drop_correlated_columns_min_correlation:
-                covariance = design_matrix.T @ design_matrix / (design_matrix.shape[0] - 1)
+                covariance = get_covariance(design_matrix)
                 std = design_matrix.std(dim=0) + 1e-12
                 correlation_matrix = covariance / std[:, None] / std[None, :]
                 keep_mask = torch.ones(design_matrix.shape[1], dtype=torch.bool)
@@ -119,10 +139,14 @@ class LinearRegressionMultiple:
                 self.column_mask = keep_mask
                 return keep_mask
         
-        design_matrix = standardize(X)
+        # Prepare the design matrix
+        design_matrix = standardize(X) # Center and scale
         if (column_mask := get_column_mask()) is not None:
-           design_matrix = design_matrix[:, column_mask]
-        return augment(design_matrix)
+           design_matrix = design_matrix[:, column_mask] # If we need to drop columns, do so
+        if self.options and self.options.pcr_min_explained_variance is not None:
+            # Project design matrix onto any PCA components
+            design_matrix = design_matrix @ get_PCA_components(design_matrix, self.options.pcr_min_explained_variance)
+        return augment(design_matrix) # Add intercept
 
     @classmethod
     def from_csv(
@@ -209,3 +233,14 @@ print('Multiple regression tests, dropping highly collinear columns')
 print('  value:', linear_regression_multiple_test.predict(X_new))
 print('  r^2:', linear_regression_multiple_test.r_squared())
 print('  Column mask:', linear_regression_multiple_test.column_mask)
+
+# The same absolutely stupid data set again, this time to make sure that PCR
+# "works"
+linear_regression_multiple_test = LinearRegressionMultiple.from_csv('./datasets/StupidMultipleRegressionDataCollinear.csv', LinearRegressionMultiple.MultipleRegressionOptions(pcr_min_explained_variance=.9))
+X_new = torch.tensor([
+    [39.0,  5.5, 100, 78],
+])
+print('Multiple regression tests, PCR')
+print('  value:', linear_regression_multiple_test.predict(X_new))
+print('  r^2:', linear_regression_multiple_test.r_squared())
+print('  PCA components:', linear_regression_multiple_test.pca_components)
